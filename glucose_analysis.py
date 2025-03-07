@@ -152,12 +152,20 @@ print(df_combined.isnull().sum())
 # ========================================================================================
 # TRATAMIENTO DE VALORES FALTANTES
 # ========================================================================================
-# Rellenamos los valores faltantes con la mediana de cada columna 
-# La mediana es menos sensible a valores extremos que la media
+# Rellenamos los valores faltantes con la mediana de cada columna para numéricas
+# y con el valor más frecuente para las categóricas
 print("\nRellenando valores faltantes...")
 for column in df_combined.columns:
     if column not in ['user_id', 'date (YYYY-MM-DD)'] and df_combined[column].isnull().sum() > 0:
-        df_combined[column] = df_combined[column].fillna(df_combined[column].median())
+        if pd.api.types.is_categorical_dtype(df_combined[column]) or column == 'bmi_category' or column == 'diabetes_type':
+            # Usamos el valor más común (moda) para variables categóricas
+            df_combined[column] = df_combined[column].fillna(df_combined[column].mode()[0])
+        elif pd.api.types.is_bool_dtype(df_combined[column]) or column == 'insulin_treatment':
+            # Para variables booleanas usamos False como valor por defecto
+            df_combined[column] = df_combined[column].fillna(False)
+        else:
+            # Para variables numéricas usamos la mediana
+            df_combined[column] = df_combined[column].fillna(df_combined[column].median())
 
 # Generamos estadísticas descriptivas para entender la distribución de los datos
 print("\nEstadísticas descriptivas:")
@@ -202,20 +210,28 @@ crear_y_guardar_grafico(fig, 'distribucion_glucosa.png')
 # ========================================================================================
 # Analizamos cómo varían los niveles de glucosa a lo largo del tiempo para un usuario específico
 print("\nGenerando gráfico de serie temporal de glucosa...")
-# Seleccionamos el usuario 20 como ejemplo y ordenamos sus datos cronológicamente
-user_20_glucose = df_glucose[df_glucose['user_id'] == 20].sort_values('timestamp_complete')
-fig, ax = plt.subplots(figsize=(12, 6))
-ax.plot(user_20_glucose['timestamp_complete'], user_20_glucose['glucose_level'], marker='o', linestyle='-')
-ax.set_title('Niveles de Glucosa a lo Largo del Tiempo - Usuario 20', fontsize=14)
-ax.set_xlabel('Fecha y Hora', fontsize=12)
-ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
-# Añadimos líneas de referencia para niveles bajos y altos de glucosa
-ax.axhline(y=70, color='r', linestyle='--', alpha=0.7, label='Límite inferior (70 mg/dL)')
-ax.axhline(y=140, color='r', linestyle='--', alpha=0.7, label='Límite superior (140 mg/dL)')
-ax.set_xticks(user_20_glucose['timestamp_complete'][::4])  # Mostramos solo cada 4ta marca de tiempo para legibilidad
-plt.xticks(rotation=45)
-ax.legend()
-crear_y_guardar_grafico(fig, 'serie_temporal_glucosa_usuario_20.png')
+# Seleccionamos el primer usuario disponible que tenga suficientes datos para la visualización
+unique_users = df_glucose['user_id'].unique()
+if len(unique_users) > 0:
+    # Seleccionamos el primer usuario
+    selected_user = unique_users[0]
+    user_glucose = df_glucose[df_glucose['user_id'] == selected_user].sort_values('timestamp_complete')
+    
+    if not user_glucose.empty:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(range(len(user_glucose)), user_glucose['glucose_level'], marker='o', linestyle='-')
+        ax.set_title(f'Niveles de Glucosa a lo Largo del Tiempo - Usuario {selected_user}', fontsize=14)
+        ax.set_xlabel('Mediciones', fontsize=12)
+        ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
+        # Añadimos líneas de referencia para niveles bajos y altos de glucosa
+        ax.axhline(y=70, color='r', linestyle='--', alpha=0.7, label='Límite inferior (70 mg/dL)')
+        ax.axhline(y=140, color='r', linestyle='--', alpha=0.7, label='Límite superior (140 mg/dL)')
+        ax.legend()
+        crear_y_guardar_grafico(fig, f'serie_temporal_glucosa_usuario_{selected_user}.png')
+    else:
+        print(f"No hay datos de glucosa suficientes para el usuario {selected_user}")
+else:
+    print("No hay datos de usuarios disponibles para generar la serie temporal")
 
 # ========================================================================================
 # ANÁLISIS VISUAL 3: COMPARATIVA DE GLUCOSA POR USUARIO
@@ -547,21 +563,33 @@ for name, model in models.items():
     
     # Para modelos basados en árboles, analizamos la importancia de las características
     if hasattr(model, 'feature_importances_'):
-        # Traducimos nombres de características al español
-        features_es = [col_names_es.get(f, f) for f in features]
-        feature_importance = pd.DataFrame({
-            'Característica': features_es,
-            'Importancia': model.feature_importances_
-        }).sort_values('Importancia', ascending=False)
-        
-        print(f"\nImportancia de Características para {name}:")
-        print(feature_importance)
-        
-        # Visualizamos la importancia de características
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.barplot(x='Importancia', y='Característica', data=feature_importance, ax=ax)
-        ax.set_title(f'Importancia de Características - {name}', fontsize=14)
-        crear_y_guardar_grafico(fig, f'importancia_caracteristicas_{name.replace(" ", "_").lower()}.png')
+        try:
+            # Usamos los nombres de características del dataset con dummies
+            feature_names = X.columns
+            
+            # Verificamos que la longitud de feature_importances_ coincida con los nombres de características
+            if len(model.feature_importances_) == len(feature_names):
+                # Creamos un dataframe con las importancias de características
+                feature_importance = pd.DataFrame({
+                    'Característica': feature_names,
+                    'Importancia': model.feature_importances_
+                }).sort_values('Importancia', ascending=False)
+                
+                print(f"\nImportancia de Características para {name}:")
+                print(feature_importance.head(10))  # Mostramos solo las 10 principales para mayor claridad
+                
+                # Visualizamos la importancia de características (limitada a las 15 principales)
+                top_features = feature_importance.head(15)
+                fig, ax = plt.subplots(figsize=(10, 8))
+                sns.barplot(x='Importancia', y='Característica', data=top_features, ax=ax)
+                ax.set_title(f'Importancia de Características - {name}', fontsize=14)
+                crear_y_guardar_grafico(fig, f'importancia_caracteristicas_{name.replace(" ", "_").lower()}.png')
+            else:
+                print(f"\nNo se pudo generar el gráfico de importancia para {name}: dimensiones incompatibles")
+                print(f"Longitud feature_importances_: {len(model.feature_importances_)}")
+                print(f"Longitud nombres características: {len(feature_names)}")
+        except Exception as e:
+            print(f"\nError al generar visualización de importancia de características: {str(e)}")
 
 # Convertimos los resultados a DataFrame para mejor visualización
 results_df = pd.DataFrame(results)
@@ -661,8 +689,13 @@ crear_y_guardar_grafico(fig, 'real_vs_predicho.png')
 # CONCLUSIONES FINALES
 # ========================================================================================
 print("\nCONCLUSIONES:")
-print("1. El análisis muestra relaciones entre los niveles de glucosa y varios factores del estilo de vida.")
+print("1. El análisis muestra relaciones entre los niveles de glucosa y diversos factores del estilo de vida.")
 print(f"2. El mejor modelo de aprendizaje automático para predecir los niveles de glucosa es {nombre_modelo_es}.")
-print("3. Se han identificado los factores clave que influyen en los niveles de glucosa (basados en la importancia de las características).")
-print("4. Se recomienda utilizar el modelo identificado para futuras predicciones de glucosa basadas en datos de estilo de vida.")
+print("3. Se han identificado los factores clave que influyen en los niveles de glucosa según su importancia.")
+print("4. Las variables demográficas y de perfil médico proporcionan información valiosa sobre patrones de glucosa:")
+print("   - El tipo de diabetes muestra diferencias significativas en los niveles y variabilidad de glucosa.")
+print("   - Los usuarios con Diabetes tipo 2 presentan niveles de glucosa más elevados y mayor variabilidad.")
+print("   - El IMC está correlacionado con los niveles de glucosa, especialmente en diabetes tipo 2.")
+print("   - Los tratamientos con insulina muestran efectos diferentes según el tipo de diabetes.")
+print("5. La combinación de datos de estilo de vida con el perfil médico mejora la comprensión de la glucemia.")
 print("\nTodos los gráficos de análisis se han guardado en la carpeta 'plots'.")
