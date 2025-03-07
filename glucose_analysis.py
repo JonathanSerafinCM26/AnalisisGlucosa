@@ -23,8 +23,8 @@ colors = plt.cm.tab10.colors  # Paleta de colores predefinida para mantener cons
 # CARGA DE DATOS E INSPECCIÓN INICIAL
 # ========================================================================================
 print("Cargando datos...")
-# Leemos el archivo CSV que contiene los datos de glucosa, alimentación, sueño, ejercicio y estado mental
-df = pd.read_csv('global_unified_stats (11).csv')
+# Leemos el archivo CSV actualizado que contiene los datos de glucosa, alimentación, sueño, ejercicio, estado mental y perfil
+df = pd.read_csv('global_unified_stats (15).csv')
 print(f"Forma del conjunto de datos: {df.shape}")
 
 # Exploramos las primeras filas para entender la estructura general de los datos
@@ -56,6 +56,33 @@ df_alimentation = df[df['record_type'] == 'alimentation']  # Datos de alimentaci
 df_sleep = df[df['record_type'] == 'sleep']  # Datos de sueño
 df_exercise = df[df['record_type'] == 'exercise']  # Datos de ejercicio
 df_mental = df[df['record_type'] == 'mental_state']  # Datos de estado mental
+df_profile = df[df['record_type'] == 'user_profile']  # Datos de perfil de usuario
+
+# Para cada usuario, tomamos su perfil más reciente para el análisis
+latest_profiles = df_profile.sort_values('timestamp_complete', ascending=False).drop_duplicates('user_id')
+
+# Procesamiento de datos demográficos
+latest_profiles['age'] = pd.to_datetime('today') - pd.to_datetime(latest_profiles['birthdate'])
+latest_profiles['age_years'] = latest_profiles['age'].dt.days // 365
+
+# Cálculo del IMC (kg/m²)
+latest_profiles['bmi'] = latest_profiles['weight'] / ((latest_profiles['height']/100) ** 2)
+latest_profiles['bmi_category'] = pd.cut(
+    latest_profiles['bmi'],
+    bins=[0, 18.5, 24.9, 29.9, 100],
+    labels=['Bajo peso', 'Normal', 'Sobrepeso', 'Obesidad']
+)
+
+# Extracción de información sobre tipo de diabetes
+latest_profiles['diabetes_type'] = latest_profiles['health_conditions'].apply(
+    lambda x: 'Diabetes tipo 1' if 'Diabetes tipo 1' in str(x) else
+              'Diabetes tipo 2' if 'Diabetes tipo 2' in str(x) else
+              'Diabetes gestacional' if 'Diabetes gestacional' in str(x) else
+              'No especificada'
+)
+
+# Identificación de uso de insulina
+latest_profiles['insulin_treatment'] = latest_profiles['medications'].str.contains('Insulina', case=False, na=False)
 
 # ========================================================================================
 # AGREGACIÓN DE DATOS A NIVEL DIARIO POR USUARIO
@@ -98,7 +125,6 @@ df_mental_daily = df_mental.groupby(['user_id', 'date (YYYY-MM-DD)']).agg({
 # ========================================================================================
 # FUSIÓN DE DATOS PARA ANÁLISIS INTEGRAL
 # ========================================================================================
-# Combinamos todos los datos diarios en un único dataframe para analizar relaciones
 print("\nFusionando datos...")
 # Usamos la glucosa como base y añadimos las demás métricas mediante operaciones de merge
 df_combined = df_glucose_daily.merge(
@@ -110,6 +136,12 @@ df_combined = df_glucose_daily.merge(
 ).merge(
     df_mental_daily, on=['user_id', 'date (YYYY-MM-DD)'], how='left'
 )
+
+# Añadimos datos de perfil de usuario (datos demográficos y médicos)
+profile_columns = ['user_id', 'age_years', 'height', 'weight', 'bmi', 'bmi_category', 
+                  'diabetes_type', 'insulin_treatment', 'avg_exercise_times_per_week', 
+                  'avg_sleep_hours_per_day', 'avg_meals_per_day']
+df_combined = df_combined.merge(latest_profiles[profile_columns], on='user_id', how='left')
 
 # Verificamos la dimensión del conjunto de datos combinado
 print(f"Forma del conjunto de datos combinado: {df_combined.shape}")
@@ -331,18 +363,138 @@ ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
 crear_y_guardar_grafico(fig, 'glucosa_por_sueno.png')
 
 # ========================================================================================
+# ANÁLISIS VISUAL: GLUCOSA POR TIPO DE DIABETES
+# ========================================================================================
+print("\nGenerando gráfico de glucosa por tipo de diabetes...")
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.boxplot(x='diabetes_type', y='glucose_level', data=df_combined, ax=ax)
+ax.set_title('Niveles de Glucosa por Tipo de Diabetes', fontsize=14)
+ax.set_xlabel('Tipo de Diabetes', fontsize=12)
+ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
+plt.xticks(rotation=45)
+crear_y_guardar_grafico(fig, 'glucosa_por_tipo_diabetes.png')
+
+# Estadísticas descriptivas
+glucose_by_diabetes = df_combined.groupby('diabetes_type')['glucose_level'].agg(['mean', 'std', 'count'])
+print("\nEstadísticas descriptivas de glucosa por tipo de diabetes:")
+print(glucose_by_diabetes)
+
+# ========================================================================================
+# ANÁLISIS VISUAL: GLUCOSA POR CATEGORÍA DE IMC
+# ========================================================================================
+print("\nGenerando gráfico de glucosa por categoría de IMC...")
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.boxplot(x='bmi_category', y='glucose_level', data=df_combined, ax=ax)
+ax.set_title('Niveles de Glucosa por Categoría de IMC', fontsize=14)
+ax.set_xlabel('Categoría de IMC', fontsize=12)
+ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
+plt.xticks(rotation=45)
+crear_y_guardar_grafico(fig, 'glucosa_por_imc.png')
+
+# Estadísticas descriptivas
+bmi_stats = df_combined.groupby('bmi_category')['glucose_level'].agg(['mean', 'std', 'count'])
+print("\nEstadísticas descriptivas de glucosa por categoría de IMC:")
+print(bmi_stats)
+
+# ========================================================================================
+# ANÁLISIS VISUAL: COMPARACIÓN DE EJERCICIO AUTOREPORTADO VS MEDIDO
+# ========================================================================================
+print("\nGenerando gráfico de comparación de ejercicio...")
+
+# Calculamos el promedio de minutos de ejercicio por frecuencia semanal reportada
+exercise_comparison = df_combined.groupby('avg_exercise_times_per_week')['exercise_minutes'].mean().reset_index()
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(x='avg_exercise_times_per_week', y='exercise_minutes', data=exercise_comparison, ax=ax)
+ax.set_title('Minutos Promedio de Ejercicio por Frecuencia Semanal Reportada', fontsize=14)
+ax.set_xlabel('Veces de Ejercicio por Semana (Autoreportado)', fontsize=12)
+ax.set_ylabel('Minutos de Ejercicio (Medido)', fontsize=12)
+crear_y_guardar_grafico(fig, 'comparacion_ejercicio.png')
+
+# ========================================================================================
+# ANÁLISIS VISUAL: EFECTIVIDAD DEL TRATAMIENTO CON INSULINA
+# ========================================================================================
+print("\nGenerando gráfico de efectividad de tratamiento con insulina...")
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.boxplot(x='insulin_treatment', y='glucose_level', hue='diabetes_type', data=df_combined, ax=ax)
+ax.set_title('Niveles de Glucosa por Tipo de Tratamiento', fontsize=14)
+ax.set_xlabel('Tratamiento con Insulina', fontsize=12)
+ax.set_ylabel('Nivel de Glucosa (mg/dL)', fontsize=12)
+ax.set_xticklabels(['Sin Insulina', 'Con Insulina'])
+crear_y_guardar_grafico(fig, 'efectividad_insulina.png')
+
+# Estadísticas descriptivas
+insulin_stats = df_combined.groupby(['diabetes_type', 'insulin_treatment'])['glucose_level'].agg(['mean', 'std', 'count'])
+print("\nEstadísticas descriptivas de glucosa por tipo de tratamiento:")
+print(insulin_stats)
+
+# ========================================================================================
+# ANÁLISIS VISUAL: CORRELACIÓN ENTRE EDAD, IMC Y GLUCOSA
+# ========================================================================================
+print("\nGenerando gráficos de correlación entre edad, IMC y glucosa...")
+
+# Crear un dataframe con las variables relevantes
+demographic_vars = ['glucose_level', 'age_years', 'bmi', 'avg_exercise_times_per_week', 
+                   'avg_sleep_hours_per_day', 'avg_meals_per_day']
+corr_df = df_combined[demographic_vars].dropna()
+
+# Matriz de correlación
+demographic_corr = corr_df.corr()
+
+# Mapa de calor de correlación
+fig, ax = plt.subplots(figsize=(10, 8))
+sns.heatmap(demographic_corr, annot=True, cmap='coolwarm', fmt=".2f", ax=ax)
+ax.set_title('Correlación entre Variables Demográficas y Glucosa', fontsize=14)
+crear_y_guardar_grafico(fig, 'correlacion_demografica.png')
+
+# Gráficos de dispersión
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+axes = axes.flatten()
+
+sns.scatterplot(x='age_years', y='glucose_level', hue='diabetes_type', data=df_combined, ax=axes[0])
+axes[0].set_title('Nivel de Glucosa vs Edad', fontsize=12)
+
+sns.scatterplot(x='bmi', y='glucose_level', hue='diabetes_type', data=df_combined, ax=axes[1])
+axes[1].set_title('Nivel de Glucosa vs IMC', fontsize=12)
+
+sns.scatterplot(x='avg_exercise_times_per_week', y='glucose_level', hue='diabetes_type', data=df_combined, ax=axes[2])
+axes[2].set_title('Nivel de Glucosa vs Frecuencia de Ejercicio', fontsize=12)
+
+sns.scatterplot(x='avg_sleep_hours_per_day', y='glucose_level', hue='diabetes_type', data=df_combined, ax=axes[3])
+axes[3].set_title('Nivel de Glucosa vs Horas de Sueño Promedio', fontsize=12)
+
+plt.tight_layout()
+crear_y_guardar_grafico(fig, 'dispersion_demografica_glucosa.png')
+
+# ========================================================================================
 # MODELADO PREDICTIVO: PREPARACIÓN DE DATOS
 # ========================================================================================
 print("\nPreparando datos para aprendizaje automático...")
 
-# Definimos las características predictoras (X) y la variable objetivo (y)
+# Definimos las características predictoras (X) incluyendo variables demográficas y médicas
 features = ['calories', 'carbohydrates', 'proteins', 'fats', 'hours_slept', 
-            'exercise_minutes', 'anxiety_level', 'stress_level']
-X = df_combined[features]  # Variables predictoras
-y = df_combined['glucose_level']  # Variable objetivo (niveles de glucosa)
+            'exercise_minutes', 'anxiety_level', 'stress_level', 'age_years', 
+            'bmi', 'avg_exercise_times_per_week', 'avg_sleep_hours_per_day',
+            'avg_meals_per_day']
+
+X = df_combined[features].copy()  # Variables predictoras
+y = df_combined['glucose_level'].copy()  # Variable objetivo (niveles de glucosa)
+
+# Creamos variables dummy para diabetes_type, bmi_category e insulin_treatment
+X_with_dummies = pd.get_dummies(
+    df_combined[features + ['diabetes_type', 'bmi_category', 'insulin_treatment']], 
+    columns=['diabetes_type', 'bmi_category', 'insulin_treatment'],
+    drop_first=True
+)
+
+# Eliminamos filas con valores faltantes
+X = X_with_dummies.dropna()
+y = y[X.index]
 
 # Estandarizamos las características para mejorar el rendimiento de los modelos
-# Esto asegura que todas las variables estén en la misma escala
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
